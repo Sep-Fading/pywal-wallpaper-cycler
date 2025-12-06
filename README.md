@@ -11,36 +11,7 @@ A smart wallpaper rotation system that seamlessly integrates with pywal, changin
 - Runs as a systemd service for reliability
 - Survives reboots and integrates with Hyprland
 
-## 📦 Files Included
-
-| File | Description |
-|------|-------------|
-| `wallpaper_rotation_improved.py` | Main script (improved with error handling) |
-| `wallpaper-rotation.service` | Systemd service definition |
-| `wallpaper-rotation.timer` | Systemd timer (runs every 30 min) |
-| `install.sh` | Automated installation script |
-| `DEPLOYMENT.md` | Complete deployment guide |
-| `IMPROVEMENTS.md` | Technical improvements documentation |
-| `QUICK_REFERENCE.md` | Command cheat sheet |
-
-## 🚀 Quick Start
-
-### One-Command Installation
-
-```bash
-chmod +x install.sh
-./install.sh
-```
-
-That's it! The script will:
-1. Install to `~/.local/bin/wallpaper-rotation.py`
-2. Set up systemd service and timer
-3. Enable and start the timer
-4. Show you the status
-
-### Manual Installation
-
-If you prefer to do it manually:
+### Installation
 
 ```bash
 # 1. Install script
@@ -79,6 +50,7 @@ This ensures the timer starts when you log in.
 - Wallpapers in `~/Pictures/Wallpapers/`
 
 Install missing dependencies:
+
 ```bash
 # Arch Linux
 sudo pacman -S python imagemagick python-pywal
@@ -103,12 +75,14 @@ OnUnitActiveSec=30min # Run every 30 minutes
 ```
 
 Common intervals:
+
 - `15min` - Every 15 minutes (frequent)
 - `30min` - Every 30 minutes (default)
 - `1h` - Every hour
 - `4h` - Every 4 hours (infrequent)
 
 After changes:
+
 ```bash
 systemctl --user daemon-reload
 systemctl --user restart wallpaper-rotation.timer
@@ -221,8 +195,6 @@ systemctl --user start wallpaper-rotation.service
 
 ## 📚 Documentation
 
-- **DEPLOYMENT.md** - Detailed deployment guide with multiple methods
-- **IMPROVEMENTS.md** - Technical improvements from original script
 - **QUICK_REFERENCE.md** - Command cheat sheet
 
 ## 🔧 Advanced Usage
@@ -230,6 +202,7 @@ systemctl --user start wallpaper-rotation.service
 ### Custom wallpaper directory
 
 Edit the script:
+
 ```python
 WALLPAPER_DIR = Path.home() / "Pictures/Wallpapers"
 # Change to your directory
@@ -237,15 +210,12 @@ WALLPAPER_DIR = Path.home() / "Pictures/Wallpapers"
 
 ### Custom theme command
 
-The script uses `wall` by default. To change:
+The script uses `wall` by default, I just copied it into this repo if you want inspiration for your own setup or copying it. To change:
+
 ```python
 THEME_COMMAND = "wall"  # Change to your command
 # e.g., "feh --bg-scale", "nitrogen --set-auto", etc.
 ```
-
-### Different color distance algorithm
-
-For perceptually uniform matching, you could implement CIELAB distance instead of RGB. See `IMPROVEMENTS.md` for details.
 
 ## 🗑️ Uninstallation
 
@@ -282,12 +252,3 @@ If you encounter issues:
 3. Verify prerequisites are installed
 4. Check file permissions
 5. See troubleshooting section above
-
-## ⚖️ License
-
-Original script concept adapted and significantly improved with:
-- Comprehensive error handling
-- Cache validation and staleness detection
-- Race condition prevention with file locking
-- Proper logging and type hints
-- Production-ready systemd integration

@@ -11,15 +11,21 @@ import fcntl
 import time
 
 # --- CONFIGURATION ---
-THEME_COMMAND = "wall"
 WALLPAPER_DIR = Path.home() / "Pictures/Wallpapers"
 
 # Files
 CACHE_FILE = Path.home() / ".cache/wallpaper_colors.json"
 CYCLE_LOG = Path.home() / ".cache/wallpaper_global_history.txt"
 STATE_FILE = Path.home() / ".cache/wallpaper_queue_state.json"
-PYWAL_COLORS = Path.home() / ".cache/wal/colors"
+CURRENT_WALLPAPER_FILE = Path.home() / ".cache/current_wallpaper.txt"
 LOCK_FILE = Path.home() / ".cache/wallpaper_rotation.lock"
+
+# SWWW transition settings
+SWWW_TRANSITION_TYPE = "grow"
+SWWW_TRANSITION_POS = "0.5,0.5"
+SWWW_TRANSITION_STEP = "45"
+SWWW_TRANSITION_FPS = "240"
+SWWW_TRANSITION_DURATION = "0.75"
 
 # --- TUNING FOR "IMPERCEPTIBLE" CHANGES ---
 QUEUE_SIZE = 10         
@@ -251,32 +257,52 @@ def main():
 def run_wallpaper_rotation():
     """Main wallpaper rotation logic"""
     
-    # 1. Get Current Pywal Color
-    if not PYWAL_COLORS.exists():
-        logger.error("Pywal not active. Colors file not found.")
+    # 1. Get Current Wallpaper and Its Color
+    if not CURRENT_WALLPAPER_FILE.exists():
+        logger.warning("No current wallpaper file found. Initializing with random wallpaper.")
+        # Pick a random wallpaper to start
+        files = get_files()
+        if not files:
+            logger.error(f"No wallpaper files found in {WALLPAPER_DIR}")
+            sys.exit(1)
+        current_wallpaper = str(files[0])
+        CURRENT_WALLPAPER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CURRENT_WALLPAPER_FILE, 'w') as f:
+            f.write(current_wallpaper)
+    else:
+        try:
+            with open(CURRENT_WALLPAPER_FILE, 'r') as f:
+                current_wallpaper = f.read().strip()
+            
+            if not current_wallpaper or not Path(current_wallpaper).exists():
+                logger.warning(f"Current wallpaper file invalid or missing: {current_wallpaper}")
+                files = get_files()
+                if files:
+                    current_wallpaper = str(files[0])
+                    with open(CURRENT_WALLPAPER_FILE, 'w') as f:
+                        f.write(current_wallpaper)
+                else:
+                    logger.error(f"No wallpaper files found in {WALLPAPER_DIR}")
+                    sys.exit(1)
+        except (PermissionError, OSError) as e:
+            logger.error(f"Error reading current wallpaper file: {e}")
+            sys.exit(1)
+    
+    # Get dominant color from current wallpaper
+    logger.info(f"Current wallpaper: {Path(current_wallpaper).name}")
+    current_color = get_dominant_color(Path(current_wallpaper))
+    if not current_color:
+        logger.error(f"Could not extract color from current wallpaper: {current_wallpaper}")
         sys.exit(1)
     
-    try:
-        with open(PYWAL_COLORS, 'r') as f:
-            lines = f.readlines()
-            if not lines:
-                logger.error("Pywal colors file is empty")
-                sys.exit(1)
-            current_hex = lines[0].strip()
-            current_rgb = hex_to_rgb(current_hex)
-    except (PermissionError, OSError) as e:
-        logger.error(f"Error reading pywal colors: {e}")
-        sys.exit(1)
-    except (ValueError, IndexError) as e:
-        logger.error(f"Invalid color format in pywal file: {e}")
-        sys.exit(1)
+    current_rgb = hex_to_rgb(current_color)
 
     # 2. Check Existing Queue State
     state = load_json(STATE_FILE)
     queue = state.get('queue', [])
-    last_trigger_hex = state.get('trigger_color', "#000000")
+    last_trigger_color = state.get('trigger_color', "000000")
     
-    last_trigger_rgb = hex_to_rgb(last_trigger_hex)
+    last_trigger_rgb = hex_to_rgb(last_trigger_color)
     drift = color_distance(current_rgb, last_trigger_rgb)
     
     force_refresh = False
@@ -325,12 +351,12 @@ def run_wallpaper_rotation():
 
         # Filter by History
         used = load_history()
-        candidates = [p for p in valid_map if p not in used]
+        candidates = [p for p in valid_map if p not in used and p != current_wallpaper]
         
         if not candidates:
             logger.info("Cycle complete. Resetting history.")
             reset_history()
-            candidates = list(valid_map.keys())
+            candidates = [p for p in valid_map.keys() if p != current_wallpaper]
 
         # Calculate Distances and Filter by Threshold
         scored: List[Tuple[float, str]] = []
@@ -351,7 +377,7 @@ def run_wallpaper_rotation():
         logger.info(f"Built queue with {len(queue)} wallpapers")
         
         # Save updated state
-        state['trigger_color'] = current_hex
+        state['trigger_color'] = current_color
         state['queue'] = queue
         save_json(STATE_FILE, state)
 
@@ -369,21 +395,34 @@ def run_wallpaper_rotation():
     # Update History
     append_history(chosen)
     
-    # Apply Wallpaper
+    # Apply Wallpaper with swww
     logger.info(f"Applying: {Path(chosen).name}")
-    cmd_path = shutil.which(THEME_COMMAND)
     
-    if not cmd_path:
-        logger.error(f"Command '{THEME_COMMAND}' not found in PATH")
+    # Check if swww is available
+    swww_path = shutil.which('swww')
+    if not swww_path:
+        logger.error("swww command not found in PATH")
         sys.exit(1)
     
     try:
         subprocess.run(
-            [cmd_path, chosen],
+            [
+                swww_path, 'img', chosen,
+                '--transition-type', SWWW_TRANSITION_TYPE,
+                '--transition-pos', SWWW_TRANSITION_POS,
+                '--transition-step', SWWW_TRANSITION_STEP,
+                '--transition-fps', SWWW_TRANSITION_FPS,
+                '--transition-duration', SWWW_TRANSITION_DURATION
+            ],
             check=True,
             timeout=30,
             capture_output=True
         )
+        
+        # Update current wallpaper file
+        with open(CURRENT_WALLPAPER_FILE, 'w') as f:
+            f.write(chosen)
+        
         logger.info("Wallpaper applied successfully")
     except subprocess.TimeoutExpired:
         logger.error("Timeout applying wallpaper")

@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/wallpaper-rotation.py
+ExecStart=%h/.local/bin/wallpaper_cycler/wallpaper-rotation.py
 StandardOutput=journal
 StandardError=journal
 
