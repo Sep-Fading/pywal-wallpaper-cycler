@@ -31,8 +31,9 @@ SWWW_TRANSITION_FPS = "240"
 SWWW_TRANSITION_DURATION = "0.75"
 
 # --- COLOR MATCHING TUNING ---
+NUM_COLORS = 6             # Number of dominant colors to extract per image
 QUEUE_SIZE = 10
-MAX_MATCH_DIST = 45.0      # Lower values = stricter color matching
+MAX_MATCH_DIST = 35.0      # Lower values = stricter color matching
 DRIFT_TOLERANCE = 25.0     # Threshold for queue rebuild  
 # ---------------------
 
@@ -112,11 +113,14 @@ def palette_distance(palette1: List[str], palette2: List[str]) -> float:
     return min_dist
 
 
-def get_dominant_colors(image_path: Path, num_colors: int = 3) -> Optional[List[str]]:
+def get_dominant_colors(image_path: Path, num_colors: int = None) -> Optional[List[str]]:
     """
     Extract top N dominant colors from image using ImageMagick color quantization.
     Returns list of hex color strings (without '#'), or None on failure.
     """
+    if num_colors is None:
+        num_colors = NUM_COLORS
+    
     try:
         path_str = str(image_path)
         if image_path.suffix.lower() == '.gif':
