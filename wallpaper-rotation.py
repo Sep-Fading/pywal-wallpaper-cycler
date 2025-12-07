@@ -34,7 +34,7 @@ SWWW_TRANSITION_DURATION = "0.75"
 NUM_COLORS = 6             # Number of dominant colors to extract per image
 QUEUE_SIZE = 10
 MAX_MATCH_DIST = 35.0      # Lower values = stricter color matching
-DRIFT_TOLERANCE = 25.0     # Threshold for queue rebuild  
+DRIFT_TOLERANCE = 35.0     # Threshold for queue rebuild (using average distance)  
 # ---------------------
 
 # Logging configuration
@@ -88,7 +88,11 @@ def get_files() -> List[Path]:
 def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
     """Convert hex color to RGB tuple"""
     hex_str = hex_str.lstrip('#')
-    return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
+    return (
+        int(hex_str[0:2], 16),
+        int(hex_str[2:4], 16),
+        int(hex_str[4:6], 16)
+    )
 
 
 def color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
@@ -113,7 +117,33 @@ def palette_distance(palette1: List[str], palette2: List[str]) -> float:
     return min_dist
 
 
-def get_dominant_colors(image_path: Path, num_colors: int = None) -> Optional[List[str]]:
+def palette_average_distance(palette1: List[str], palette2: List[str]) -> float:
+    """
+    Calculate average minimum distance between two color palettes.
+    For each color in palette1, finds its closest match in palette2,
+    then returns the average of all these minimum distances.
+    This gives a better overall similarity metric than single minimum.
+    """
+    if not palette1 or not palette2:
+        return float('inf')
+    
+    total_dist = 0.0
+    
+    for color1_hex in palette1:
+        rgb1 = hex_to_rgb(color1_hex)
+        min_dist_for_this_color = float('inf')
+        
+        for color2_hex in palette2:
+            rgb2 = hex_to_rgb(color2_hex)
+            dist = color_distance(rgb1, rgb2)
+            min_dist_for_this_color = min(min_dist_for_this_color, dist)
+        
+        total_dist += min_dist_for_this_color
+    
+    return total_dist / len(palette1)
+
+
+def get_dominant_colors(image_path: Path, num_colors: Optional[int] = None) -> Optional[List[str]]:
     """
     Extract top N dominant colors from image using ImageMagick color quantization.
     Returns list of hex color strings (without '#'), or None on failure.
@@ -327,7 +357,7 @@ def run_wallpaper_rotation():
     
     drift = 0.0
     if last_trigger_colors:
-        drift = palette_distance(current_colors, last_trigger_colors)
+        drift = palette_average_distance(current_colors, last_trigger_colors)
     
     force_refresh = False
     
