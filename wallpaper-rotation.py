@@ -13,7 +13,10 @@ import time
 # --- CONFIGURATION ---
 WALLPAPER_DIR = Path.home() / "Pictures/Wallpapers"
 
-# Files
+# Set to True to update theme colors (pywal) on rotation, False for wallpaper-only
+UPDATE_THEME_COLORS = True
+
+# Cache and state files
 CACHE_FILE = Path.home() / ".cache/wallpaper_colors.json"
 CYCLE_LOG = Path.home() / ".cache/wallpaper_global_history.txt"
 STATE_FILE = Path.home() / ".cache/wallpaper_queue_state.json"
@@ -27,21 +30,13 @@ SWWW_TRANSITION_STEP = "45"
 SWWW_TRANSITION_FPS = "240"
 SWWW_TRANSITION_DURATION = "0.75"
 
-# --- TUNING FOR "IMPERCEPTIBLE" CHANGES ---
-QUEUE_SIZE = 10         
-
-# STRICTNESS: Lower = More subtle. 
-# 45.0 is a good balance. 
-# If you still notice it, lower to 35.0. 
-# If it never changes wallpaper, raise to 60.0.
-MAX_MATCH_DIST = 45.0   
-
-# If the current theme drifts more than this (e.g. you picked a new color manually),
-# we scrap the old queue and recalculate.
-DRIFT_TOLERANCE = 25.0  
+# --- COLOR MATCHING TUNING ---
+QUEUE_SIZE = 10
+MAX_MATCH_DIST = 45.0      # Lower values = stricter color matching
+DRIFT_TOLERANCE = 25.0     # Threshold for queue rebuild  
 # ---------------------
 
-# Setup logging
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -50,7 +45,8 @@ logger = logging.getLogger(__name__)
 
 
 class FileLock:
-    """Context manager for file-based locking to prevent concurrent runs"""
+    """File-based locking to prevent concurrent script execution"""
+    
     def __init__(self, lock_file: Path, timeout: int = 5):
         self.lock_file = lock_file
         self.timeout = timeout
@@ -91,11 +87,7 @@ def get_files() -> List[Path]:
 def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
     """Convert hex color to RGB tuple"""
     hex_str = hex_str.lstrip('#')
-    return (
-        int(hex_str[0:2], 16),
-        int(hex_str[2:4], 16),
-        int(hex_str[4:6], 16)
-    )
+    return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
 
 
 def color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
@@ -103,32 +95,67 @@ def color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
 
 
-def get_dominant_color(image_path: Path) -> Optional[str]:
+def palette_distance(palette1: List[str], palette2: List[str]) -> float:
     """
-    Extract dominant color from image using ImageMagick.
-    Returns hex color string without '#' prefix, or None on failure.
+    Calculate minimum Euclidean distance between two color palettes.
+    Returns the smallest distance between any color pair.
+    """
+    min_dist = float('inf')
+    
+    for color1_hex in palette1:
+        rgb1 = hex_to_rgb(color1_hex)
+        for color2_hex in palette2:
+            rgb2 = hex_to_rgb(color2_hex)
+            dist = color_distance(rgb1, rgb2)
+            min_dist = min(min_dist, dist)
+    
+    return min_dist
+
+
+def get_dominant_colors(image_path: Path, num_colors: int = 3) -> Optional[List[str]]:
+    """
+    Extract top N dominant colors from image using ImageMagick color quantization.
+    Returns list of hex color strings (without '#'), or None on failure.
     """
     try:
         path_str = str(image_path)
-        # For GIFs, only analyze first frame
         if image_path.suffix.lower() == '.gif':
             path_str += "[0]"
         
-        # Resize to 1x1 to get average color
-        cmd = ['magick', path_str, '-resize', '1x1', '-depth', '8', 'txt:-']
+        cmd = [
+            'magick', path_str,
+            '-resize', '400x400>',
+            '-colors', str(num_colors),
+            '-depth', '8',
+            '-format', '%c',
+            'histogram:info:-'
+        ]
+        
         result = subprocess.run(
             cmd, 
             capture_output=True, 
             text=True, 
             check=True,
-            timeout=10
+            timeout=15
         )
         
+        colors = []
         for line in result.stdout.splitlines():
-            if '#' in line:
-                return line.split('#')[1].split()[0]
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            if '#' in line and ':' in line:
+                hex_part = line.split('#')[1].split()[0]
+                if len(hex_part) == 6 and all(c in '0123456789ABCDEFabcdef' for c in hex_part):
+                    colors.append(hex_part.upper())
+                    if len(colors) >= num_colors:
+                        break
         
-        logger.warning(f"Could not parse color from: {image_path.name}")
+        if colors:
+            return colors
+        
+        logger.warning(f"Could not parse colors from: {image_path.name}")
         return None
         
     except subprocess.TimeoutExpired:
@@ -146,7 +173,7 @@ def get_dominant_color(image_path: Path) -> Optional[str]:
 
 
 def load_json(path: Path) -> dict:
-    """Safely load JSON file with error handling"""
+    """Load JSON file with error handling"""
     if not path.exists():
         return {}
     
@@ -155,7 +182,6 @@ def load_json(path: Path) -> dict:
             return json.load(f)
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in {path}: {e}")
-        # Backup corrupted file
         backup = path.with_suffix('.json.backup')
         shutil.copy2(path, backup)
         logger.info(f"Backed up corrupted file to {backup}")
@@ -166,12 +192,11 @@ def load_json(path: Path) -> dict:
 
 
 def save_json(path: Path, data: dict) -> bool:
-    """Safely save JSON file with atomic write"""
+    """Save JSON file with atomic write"""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Write to temp file first, then rename (atomic on Unix)
         temp_path = path.with_suffix('.json.tmp')
+        
         with open(temp_path, 'w') as f:
             json.dump(data, f, indent=2)
         
@@ -218,10 +243,7 @@ def reset_history() -> None:
 
 
 def validate_cache(cache: Dict[str, str], existing_files: List[Path]) -> Dict[str, str]:
-    """
-    Remove stale entries from cache and check for modified files.
-    Returns cleaned cache.
-    """
+    """Remove stale cache entries for deleted files"""
     existing_paths = {str(p): p for p in existing_files}
     cleaned_cache = {}
     removed_count = 0
@@ -229,12 +251,10 @@ def validate_cache(cache: Dict[str, str], existing_files: List[Path]) -> Dict[st
     for path_str, color in cache.items():
         path_obj = Path(path_str)
         
-        # Remove if file no longer exists
         if not path_obj.exists():
             removed_count += 1
             continue
         
-        # Check if file was modified (simple check - could be enhanced with mtime)
         if path_str in existing_paths:
             cleaned_cache[path_str] = color
     
@@ -245,7 +265,7 @@ def validate_cache(cache: Dict[str, str], existing_files: List[Path]) -> Dict[st
 
 
 def main():
-    # Use file lock to prevent concurrent runs
+    """Entry point with file locking"""
     try:
         with FileLock(LOCK_FILE):
             run_wallpaper_rotation()
@@ -257,10 +277,9 @@ def main():
 def run_wallpaper_rotation():
     """Main wallpaper rotation logic"""
     
-    # 1. Get Current Wallpaper and Its Color
+    # 1. Load or initialize current wallpaper
     if not CURRENT_WALLPAPER_FILE.exists():
         logger.warning("No current wallpaper file found. Initializing with random wallpaper.")
-        # Pick a random wallpaper to start
         files = get_files()
         if not files:
             logger.error(f"No wallpaper files found in {WALLPAPER_DIR}")
@@ -288,26 +307,26 @@ def run_wallpaper_rotation():
             logger.error(f"Error reading current wallpaper file: {e}")
             sys.exit(1)
     
-    # Get dominant color from current wallpaper
+    # Extract dominant color palette
     logger.info(f"Current wallpaper: {Path(current_wallpaper).name}")
-    current_color = get_dominant_color(Path(current_wallpaper))
-    if not current_color:
-        logger.error(f"Could not extract color from current wallpaper: {current_wallpaper}")
+    current_colors = get_dominant_colors(Path(current_wallpaper))
+    if not current_colors:
+        logger.error(f"Could not extract colors from current wallpaper: {current_wallpaper}")
         sys.exit(1)
     
-    current_rgb = hex_to_rgb(current_color)
+    logger.info(f"Current palette: {', '.join(['#' + c for c in current_colors])}")
 
-    # 2. Check Existing Queue State
+    # 2. Check queue state and drift
     state = load_json(STATE_FILE)
     queue = state.get('queue', [])
-    last_trigger_color = state.get('trigger_color', "000000")
+    last_trigger_colors = state.get('trigger_colors', [])
     
-    last_trigger_rgb = hex_to_rgb(last_trigger_color)
-    drift = color_distance(current_rgb, last_trigger_rgb)
+    drift = 0.0
+    if last_trigger_colors:
+        drift = palette_distance(current_colors, last_trigger_colors)
     
     force_refresh = False
     
-    # Determine if queue needs rebuilding
     if not queue:
         logger.info("Queue empty.")
         force_refresh = True
@@ -317,7 +336,7 @@ def run_wallpaper_rotation():
     else:
         logger.info(f"Theme stable (Drift: {drift:.1f}).")
 
-    # 3. Rebuild Queue if needed
+    # 3. Rebuild queue if needed
     if force_refresh:
         cache = load_json(CACHE_FILE)
         files = get_files()
@@ -326,30 +345,29 @@ def run_wallpaper_rotation():
             logger.error(f"No wallpaper files found in {WALLPAPER_DIR}")
             sys.exit(1)
         
-        # Validate and clean cache
         cache = validate_cache(cache, files)
         dirty = False
         
-        # Update Cache with missing files
+        # Index new or outdated files
         valid_map = {}
         for path_obj in files:
             path_str = str(path_obj)
             
-            if path_str not in cache:
+            if path_str not in cache or not isinstance(cache[path_str], list):
                 logger.info(f"Indexing: {path_obj.name}")
-                color = get_dominant_color(path_obj)
-                if color:
-                    cache[path_str] = color
+                colors = get_dominant_colors(path_obj)
+                if colors:
+                    cache[path_str] = colors
                     dirty = True
             
-            if path_str in cache:
+            if path_str in cache and isinstance(cache[path_str], list):
                 valid_map[path_str] = cache[path_str]
         
         if dirty:
             if save_json(CACHE_FILE, cache):
                 logger.info(f"Cache updated with {len(cache)} entries")
 
-        # Filter by History
+        # Filter by history
         used = load_history()
         candidates = [p for p in valid_map if p not in used and p != current_wallpaper]
         
@@ -358,47 +376,44 @@ def run_wallpaper_rotation():
             reset_history()
             candidates = [p for p in valid_map.keys() if p != current_wallpaper]
 
-        # Calculate Distances and Filter by Threshold
+        # Calculate palette distances and filter
         scored: List[Tuple[float, str]] = []
         for path_str in candidates:
-            w_rgb = hex_to_rgb(valid_map[path_str])
-            distance = color_distance(current_rgb, w_rgb)
+            wallpaper_colors = valid_map[path_str]
+            distance = palette_distance(current_colors, wallpaper_colors)
             
-            # STRICT FILTER: Only include if within threshold
             if distance <= MAX_MATCH_DIST:
                 scored.append((distance, path_str))
         
-        # Sort by distance (closest first)
         scored.sort(key=lambda x: x[0])
-        
-        # Take top N matches
         queue = [x[1] for x in scored[:QUEUE_SIZE]]
         
+        logger.info(f"Found {len(scored)} wallpapers within distance {MAX_MATCH_DIST}")
         logger.info(f"Built queue with {len(queue)} wallpapers")
         
-        # Save updated state
-        state['trigger_color'] = current_color
+        if queue:
+            logger.info(f"Queue preview (closest 3):")
+            for i, (dist, path) in enumerate(scored[:3]):
+                wall_colors = valid_map[path]
+                logger.info(f"  {i+1}. {Path(path).name} - {', '.join(['#' + c for c in wall_colors])} (distance: {dist:.1f})")
+        
+        state['trigger_colors'] = current_colors
         state['queue'] = queue
         save_json(STATE_FILE, state)
 
-    # 4. Safety Check & Execute
+    # 4. Apply next wallpaper
     if not queue:
         logger.warning(f"No wallpapers found within distance {MAX_MATCH_DIST}. Staying put.")
         return
 
     chosen = queue.pop(0)
     
-    # Update State
     state['queue'] = queue
     save_json(STATE_FILE, state)
-    
-    # Update History
     append_history(chosen)
     
-    # Apply Wallpaper with swww
     logger.info(f"Applying: {Path(chosen).name}")
     
-    # Check if swww is available
     swww_path = shutil.which('swww')
     if not swww_path:
         logger.error("swww command not found in PATH")
@@ -419,11 +434,31 @@ def run_wallpaper_rotation():
             capture_output=True
         )
         
-        # Update current wallpaper file
         with open(CURRENT_WALLPAPER_FILE, 'w') as f:
             f.write(chosen)
         
         logger.info("Wallpaper applied successfully")
+        
+        # Update theme colors if enabled
+        if UPDATE_THEME_COLORS:
+            wal_path = shutil.which('wal')
+            if wal_path:
+                try:
+                    logger.info("Updating theme colors with pywal...")
+                    subprocess.run(
+                        [wal_path, '-i', chosen, '-n', '-q'],
+                        check=True,
+                        timeout=10,
+                        capture_output=True
+                    )
+                    logger.info("Theme colors updated")
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Failed to update theme colors: {e.stderr}")
+                except Exception as e:
+                    logger.warning(f"Error updating theme: {e}")
+            else:
+                logger.warning("pywal not found, cannot update theme colors")
+        
     except subprocess.TimeoutExpired:
         logger.error("Timeout applying wallpaper")
     except subprocess.CalledProcessError as e:

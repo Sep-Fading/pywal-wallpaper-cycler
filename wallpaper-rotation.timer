@@ -5,7 +5,7 @@ Requires=wallpaper-rotation.service
 [Timer]
 # Run every 30 minutes (adjust as needed)
 OnBootSec=2min
-OnUnitActiveSec=30min
+OnUnitActiveSec=60min
 
 # If system was suspended, catch up
 Persistent=true
