@@ -10,6 +10,7 @@ A smart wallpaper rotation system that seamlessly integrates with pywal, changin
 - Tracks history to avoid repetition
 - Runs as a systemd service for reliability
 - Survives reboots and integrates with Hyprland
+- It's kind of slow so I might just remake it at somepoint.
 
 ### Installation
 
