@@ -2,7 +2,7 @@
 
 A smart wallpaper rotation system that seamlessly integrates with pywal, changing wallpapers with imperceptibly subtle color transitions.
 Originally I made it because I didnt quite understand OLED, and I didnt want my static widgets or wallpaper on display to cause a burn in, but since then I've learnt it is not really a big fear factor anymore so this project is just now aesthetic.
-I paired it up with something else in my dotfiles that uses pywal to apply theming to a bunch of other applications when wallpaper change happens and it's satisfying.
+I paired it up with other stuff in my dotfiles that uses pywal to apply theming to a bunch of other applications when wallpaper change happens and it's satisfying.
 
 ## 🎯 What This Does
 
